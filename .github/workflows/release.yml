@@ -3,7 +3,7 @@
 #   test    (ubuntu-latest) — fast gate: jvmTest + linuxX64Test and a
 #           cross-compilation smoke test for Android / Android-Native / mingw.
 #
-#   publish (macos-14) — the only host that can build the Apple targets. It
+#   publish (macos-latest (Apple Silicon)) — the only host that can build the Apple targets. It
 #           cross-builds every other target as well, so the whole library is
 #           published from a single Sonatype Central deployment.
 #
@@ -102,7 +102,7 @@ jobs:
 
   publish:
     needs: test
-    runs-on: macos-14
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
