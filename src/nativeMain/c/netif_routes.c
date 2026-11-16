@@ -34,13 +34,31 @@
 
 #include <net/if.h>
 #include <net/if_dl.h>
-#include <net/route.h>
 #include <netinet/in.h>
 #include <sys/sysctl.h>
+
+/*
+ * <net/route.h> is public on macOS but absent from the iOS / tvOS / watchOS
+ * SDKs: Apple does not expose the routing table there. Routing works on macOS;
+ * on the other Apple targets ni_get_routes() reports "unavailable".
+ */
+#ifndef __has_include
+#define __has_include(x) 0
+#endif
+#if __has_include(<net/route.h>)
+#include <net/route.h>
+#define NI_HAS_DARWIN_ROUTES 1
+#else
+#define NI_HAS_DARWIN_ROUTES 0
+#endif
 
 #endif
 
 #endif /* _WIN32 */
+
+#ifndef NI_HAS_DARWIN_ROUTES
+#define NI_HAS_DARWIN_ROUTES 0
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* Shared helpers                                                             */
@@ -247,7 +265,7 @@ NIRoute *ni_get_routes(void) {
 /* macOS / iOS / tvOS / watchOS: sysctl(CTL_NET, PF_ROUTE, NET_RT_DUMP)       */
 /* ------------------------------------------------------------------------- */
 
-#elif defined(__APPLE__) && !defined(_WIN32)
+#elif defined(__APPLE__) && !defined(_WIN32) && NI_HAS_DARWIN_ROUTES
 
 /*
  * Darwin stores a netmask in a family-less sockaddr, trimmed of trailing zero

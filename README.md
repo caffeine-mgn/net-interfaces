@@ -106,7 +106,8 @@ spawned:
 | Platform | Source |
 |---|---|
 | Linux / Android (native and JVM) | netlink `RTM_GETROUTE` |
-| macOS / iOS / tvOS / watchOS | `sysctl(CTL_NET, PF_ROUTE, NET_RT_DUMP)` |
+| macOS | `sysctl(CTL_NET, PF_ROUTE, NET_RT_DUMP)` |
+| iOS / tvOS / watchOS | not available (Apple does not expose the routing table); `getRoutes()` returns an empty list |
 | Windows (native and JVM) | `GetIpForwardTable2` |
 | JVM / Android JVM | the same C code through a bundled JNI library |
 
