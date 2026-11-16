@@ -206,6 +206,11 @@ fun BuildDynamicTask.configureJni(target: KonanTarget, useJdkHeaders: Boolean) {
     if (target.family == Family.MINGW) {
         linkArgs("-liphlpapi", "-lws2_32")
     }
+    if (target == KonanTarget.ANDROID_ARM64 || target == KonanTarget.ANDROID_X64) {
+        // Google Play requires 16 KB page-size compatible 64-bit libraries
+        // for apps targeting Android 15+.
+        linkArgs("-Wl,-z,max-page-size=16384")
+    }
     if (useJdkHeaders) {
         val platformDir = jniPlatformDir(target)
         include(jdkInclude)
