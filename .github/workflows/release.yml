@@ -84,7 +84,21 @@ jobs:
           linkDebugTestAndroidNativeArm64
           linkDebugTestAndroidNativeArm32
           linkDebugTestAndroidNativeX86
+          buildDynamicNetif_jniMingwX64
+          assembleRelease
           --stacktrace
+
+      - name: Verify Android AAR carries every JNI ABI
+        run: |
+          set -euo pipefail
+          AAR="$(find build/outputs/aar -name '*-release.aar' | head -1)"
+          echo "aar: $AAR"
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            unzip -l "$AAR" | grep -q "jni/$abi/libnetif_jni.so" || {
+              echo "ERROR: AAR is missing jni/$abi/libnetif_jni.so"
+              exit 1
+            }
+          done
 
   publish:
     needs: test

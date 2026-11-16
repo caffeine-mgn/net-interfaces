@@ -1,8 +1,17 @@
+import org.gradle.jvm.tasks.Jar
+import org.gradle.language.jvm.tasks.ProcessResources
 import org.gradle.plugins.signing.SigningExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
+import org.jetbrains.kotlin.konan.target.Family
+import org.jetbrains.kotlin.konan.target.HostManager
+import org.jetbrains.kotlin.konan.target.KonanTarget
+import pw.binom.kotlin.clang.BuildDynamicTask
 import pw.binom.kotlin.clang.KnClangExtension
+import pw.binom.kotlin.clang.clangBuildDynamic
 import pw.binom.kotlin.clang.clangBuildStatic
+import java.io.File
+import java.net.URI
 import java.util.Base64
 
 plugins {
@@ -136,6 +145,152 @@ kotlin.targets.withType(KotlinNativeTarget::class.java).configureEach {
     }
 }
 
+// ---------------------------------------------------------------------------
+// JNI bridge for the JVM/Android routing API.
+//
+// The same C sources (netif.c + netif_routes.c) are compiled a second time as
+// a shared JNI library for the JVM host targets and for every Android ABI.
+// Desktop JVM unpacks the right library from the jar; Android loads it from
+// the AAR's jniLibs. No external processes are involved anywhere.
+// ---------------------------------------------------------------------------
+val jniSources = file("src/jvmMain/c")
+val jdkInclude = File(System.getProperty("java.home"), "include")
+val jniHeaderStagingDir = layout.buildDirectory.dir("jni-include")
+
+/**
+ * A host JDK ships `jni_md.h` only for its own platform. When cross-compiling
+ * the JVM library (e.g. mingw from Linux) the missing platform header is
+ * downloaded from OpenJDK into build/jni-include.
+ */
+val provisionJniHeaders = tasks.register("provisionJniHeaders") {
+    group = "build"
+    description = "Stages jni_md.h headers needed to cross-build the JNI library"
+    val base = "https://raw.githubusercontent.com/openjdk/jdk21u/master/src/java.base"
+    val headers = mapOf(
+        "linux" to "$base/unix/native/include/jni_md.h",
+        "win32" to "$base/windows/native/include/jni_md.h",
+    ).map { (platform, url) ->
+        jniHeaderStagingDir.get().file("$platform/jni_md.h").asFile to url
+    }
+    outputs.files(headers.map { it.first })
+    doLast {
+        headers.forEach { (target, url) ->
+            if (!target.exists()) {
+                logger.lifecycle("[netif] staging ${target.name} from OpenJDK")
+                target.parentFile.mkdirs()
+                URI(url).toURL().openStream().use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+            }
+        }
+    }
+}
+
+fun jniPlatformDir(target: KonanTarget): File? {
+    val platform = when (target.family) {
+        Family.LINUX -> "linux"
+        Family.MINGW -> "win32"
+        Family.OSX -> "darwin"
+        else -> return null
+    }
+    val hostDir = File(jdkInclude, platform)
+    if (File(hostDir, "jni_md.h").isFile) return hostDir
+    return File(jniHeaderStagingDir.get().asFile, platform)
+}
+
+fun BuildDynamicTask.configureJni(target: KonanTarget, useJdkHeaders: Boolean) {
+    include(nativeSources)
+    include(jniSources)
+    compileDir(sourceDir = nativeSources)
+    compileDir(sourceDir = jniSources)
+    if (target.family == Family.MINGW) {
+        linkArgs("-liphlpapi", "-lws2_32")
+    }
+    if (useJdkHeaders) {
+        val platformDir = jniPlatformDir(target)
+        include(jdkInclude)
+        if (platformDir != null) include(platformDir)
+        onlyIf("JNI headers for ${target.name}") {
+            File(jdkInclude, "jni.h").isFile &&
+                (platformDir == null || File(platformDir, "jni_md.h").isFile)
+        }
+    }
+}
+
+val currentHost = HostManager.host
+val isMacHost = currentHost == KonanTarget.MACOS_X64 || currentHost == KonanTarget.MACOS_ARM64
+val jvmJniTargets = buildList {
+    add(KonanTarget.LINUX_X64)
+    add(KonanTarget.LINUX_ARM64)
+    add(KonanTarget.MINGW_X64)
+    if (isMacHost) {
+        // Both Apple-Silicon and Intel desktop JVMs are supported from a macOS
+        // host; the SDK can target either architecture.
+        add(KonanTarget.MACOS_ARM64)
+        add(KonanTarget.MACOS_X64)
+    }
+}
+
+val jvmJniTasks = jvmJniTargets.map { target ->
+    clangBuildDynamic(target = target, name = "netif_jni", useLibPrefix = true) {
+        this.configureJni(target, useJdkHeaders = true)
+    }
+}
+
+tasks.matching { it.name.startsWith("buildDynamicNetif") }.configureEach {
+    dependsOn(provisionJniHeaders)
+}
+
+fun libraryExtension(target: KonanTarget): String = when (target.family) {
+    Family.MINGW -> "dll"
+    Family.OSX, Family.IOS, Family.TVOS, Family.WATCHOS -> "dylib"
+    else -> "so"
+}
+
+val jvmJniCopyTasks = jvmJniTasks.map { buildTask ->
+    val target = buildTask.target.get()
+    val extension = libraryExtension(target)
+    tasks.register<Copy>("copyNetifJni${target.name.replaceFirstChar { it.uppercase() }}") {
+        dependsOn(buildTask)
+        from(buildTask.dynamicFile)
+        rename { "libnetif_jni.$extension" }
+        into(layout.buildDirectory.dir("processed-resources/native/${target.name}"))
+    }
+}
+
+val jvmNativeResourcesDir = layout.buildDirectory.dir("processed-resources/native")
+tasks.named<ProcessResources>("jvmProcessResources") {
+    dependsOn(jvmJniCopyTasks)
+    from(jvmNativeResourcesDir)
+    include("**/*.so", "**/*.dylib", "**/*.dll")
+}
+
+tasks.named<Jar>("jvmJar") {
+    manifest {
+        attributes("Implementation-Version" to project.version.toString())
+    }
+}
+
+// Android JVM: the same routing bridge packaged as AAR jniLibs.
+val androidJniAbis = linkedMapOf(
+    KonanTarget.ANDROID_ARM64 to "arm64-v8a",
+    KonanTarget.ANDROID_ARM32 to "armeabi-v7a",
+    KonanTarget.ANDROID_X64 to "x86_64",
+    KonanTarget.ANDROID_X86 to "x86",
+)
+val androidJniLibsDir = layout.buildDirectory.dir("androidJniLibs")
+val androidJniCopyTasks = androidJniAbis.map { (target, abi) ->
+    val buildTask = clangBuildDynamic(target = target, name = "netif_jni", useLibPrefix = true) {
+        this.configureJni(target, useJdkHeaders = false)
+    }
+    tasks.register<Copy>("copyNetifJniAndroid${target.name.replaceFirstChar { it.uppercase() }}") {
+        dependsOn(buildTask)
+        from(buildTask.dynamicFile)
+        rename { "libnetif_jni.so" }
+        into(androidJniLibsDir.get().dir(abi))
+    }
+}
+
 tasks.withType<Test>().configureEach {
     testLogging {
         showStandardStreams = true
@@ -148,11 +303,21 @@ android {
 
     defaultConfig {
         minSdk = 24
+        consumerProguardFiles("src/androidMain/consumer-rules.pro")
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+    }
+
+    sourceSets["main"].jniLibs.srcDir(androidJniLibsDir.get().asFile)
+}
+
+afterEvaluate {
+    // AGP packages build/androidJniLibs only after the ABI libraries exist.
+    tasks.named("preBuild") {
+        dependsOn(androidJniCopyTasks)
     }
 }
 

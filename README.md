@@ -84,6 +84,35 @@ NetworkInterface.findByAddress(IpAddress.parse("fe80::1")!!)
 NetworkInterface.getByIp("192.168.1.10")       // throws when not found
 ```
 
+### Default gateway and routing table
+
+```kotlin
+val defaults = NetworkRouting.getDefaultRoutes()
+val ipv4Gateway = NetworkRouting.getDefaultGateway(IpVersion.V4)
+println("default: $ipv4Gateway")
+
+NetworkRouting.getRoutes().forEach { route ->
+    println("${route.destination}/${route.prefixLength} via ${route.gateway} " +
+        "dev=${route.interfaceIndex} metric=${route.metric}")
+}
+
+val wifi = NetworkInterface.findByName("wlan0")
+println("wlan0 gateways: ${wifi?.defaultGateways()}")
+```
+
+The routing table is read programmatically — no external processes are ever
+spawned:
+
+| Platform | Source |
+|---|---|
+| Linux / Android (native and JVM) | netlink `RTM_GETROUTE` |
+| macOS / iOS / tvOS / watchOS | `sysctl(CTL_NET, PF_ROUTE, NET_RT_DUMP)` |
+| Windows (native and JVM) | `GetIpForwardTable2` |
+| JVM / Android JVM | the same C code through a bundled JNI library |
+
+Android uses policy routing, so several default routes can coexist in different
+tables; prefer the per-interface `NetworkInterface.defaultGateways()` there.
+
 ### Address helpers
 
 ```kotlin
@@ -110,6 +139,7 @@ ids (`fe80::1%eth0`) are accepted when parsing and ignored.
   broadcast address and subnet membership.
 - `IpAddress` — immutable IPv4/IPv6 address with parsing, formatting and
   address classification.
+- `Route` / `NetworkRouting` — routing table entries and default gateways.
 - `MacAddress` — immutable hardware address.
 - `NetworkInterfacesException` — platform enumeration failure.
 

@@ -61,6 +61,10 @@ public class IpAddress private constructor(
             IpVersion.V6 -> (raw[0].toInt() and 0xfe) == 0xfc
         }
 
+    /** Returns whether this is the unspecified address (`0.0.0.0` or `::`). */
+    public val isUnspecified: Boolean
+        get() = raw.all { it == 0.toByte() }
+
     /** Returns whether this is a multicast address. */
     public val isMulticast: Boolean
         get() = when (version) {

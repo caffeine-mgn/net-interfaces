@@ -49,6 +49,17 @@ public class NetworkInterface internal constructor(
         return contains(address)
     }
 
+    /**
+     * Default gateways routed through this interface, IPv4 and IPv6. The
+     * routing table is read on every call.
+     */
+    public fun defaultGateways(): List<IpAddress> =
+        NetworkRouting.getRoutes()
+            .filter { it.isDefault && it.interfaceIndex == index }
+            .mapNotNull { it.gateway }
+            .filter { !it.isLoopback && !it.isUnspecified }
+            .distinct()
+
     override fun equals(other: Any?): Boolean =
         this === other ||
             (other is NetworkInterface &&
