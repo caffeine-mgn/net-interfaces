@@ -1,0 +1,6 @@
+headers = netif.h
+headerFilter = netif.h
+
+# GetAdaptersAddresses lives in iphlpapi; Winsock itself is pulled in by the
+# Windows branch of the C implementation.
+linkerOpts.mingw_x64 = -liphlpapi -lws2_32
