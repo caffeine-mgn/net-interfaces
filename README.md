@@ -29,6 +29,11 @@ share one small C implementation (`getifaddrs` on POSIX, `GetAdaptersAddresses`
 on Windows) compiled with the Kotlin/Native Clang toolchain and imported through
 cinterop.
 
+Android Native note: Kotlin/Native links against API 21, while `getifaddrs` was
+added in API 24. The symbol is resolved at runtime, so the library links with
+any `minSdk`; on API 21–23 enumeration returns an empty list, on API 24+ it
+behaves like the other POSIX targets.
+
 ## Installation
 
 ```kotlin

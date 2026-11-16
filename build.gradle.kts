@@ -3,7 +3,6 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 import pw.binom.kotlin.clang.KnClangExtension
 import pw.binom.kotlin.clang.clangBuildStatic
-import pw.binom.kotlin.clang.compileTaskName
 import java.util.Base64
 
 plugins {
@@ -114,10 +113,6 @@ kotlin.targets.withType(KotlinNativeTarget::class.java).configureEach {
     }
 
     compilations.getByName("main").apply {
-        tasks.matching { it.name == target.compileTaskName }.configureEach {
-            dependsOn(buildNative)
-        }
-
         cinterops {
             val netif by creating {
                 definitionFile.set(project.file("src/nativeInterop/cinterop/netif.def"))
@@ -127,6 +122,12 @@ kotlin.targets.withType(KotlinNativeTarget::class.java).configureEach {
         }
 
         compileTaskProvider.configure {
+            // The static archive is baked into the produced klib via
+            // -include-binary. Declaring it as an input makes Kotlin recompile
+            // (and re-embed) whenever the C sources change; without this the
+            // compile task stays UP-TO-DATE and keeps a stale libnetif.a.
+            dependsOn(buildNative)
+            inputs.file(buildNative.staticFile.get().asFile)
             compilerOptions.freeCompilerArgs.addAll(
                 "-include-binary",
                 buildNative.staticFile.get().asFile.absolutePath,

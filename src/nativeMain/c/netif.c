@@ -25,6 +25,10 @@
 
 #include <ifaddrs.h>
 #include <net/if.h>
+
+#if defined(__ANDROID__)
+#include <dlfcn.h>
+#endif
 #include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -158,6 +162,43 @@ void ni_free_interfaces(NIInterface *interfaces) {
 
 #if !defined(_WIN32)
 
+/*
+ * Kotlin/Native links Android binaries against API 21, but getifaddrs() only
+ * exists since API 24. Resolve the pair at runtime so the library still links
+ * for promiscuous minSdk values; on API < 24 enumeration reports "unavailable"
+ * (NULL) instead of failing to link.
+ */
+#if defined(__ANDROID__)
+typedef int (*ni_getifaddrs_fn)(struct ifaddrs **);
+typedef void (*ni_freeifaddrs_fn)(struct ifaddrs *);
+
+static int ni_getifaddrs(struct ifaddrs **list) {
+    static ni_getifaddrs_fn function = NULL;
+
+    if (function == NULL) {
+        function = (ni_getifaddrs_fn)dlsym(RTLD_DEFAULT, "getifaddrs");
+    }
+    if (function == NULL) {
+        return -1;
+    }
+    return function(list);
+}
+
+static void ni_freeifaddrs(struct ifaddrs *list) {
+    static ni_freeifaddrs_fn function = NULL;
+
+    if (function == NULL) {
+        function = (ni_freeifaddrs_fn)dlsym(RTLD_DEFAULT, "freeifaddrs");
+    }
+    if (function != NULL) {
+        function(list);
+    }
+}
+#else
+#define ni_getifaddrs getifaddrs
+#define ni_freeifaddrs freeifaddrs
+#endif
+
 static void ni_apply_flags(NIInterface *iface, unsigned int flags) {
     if ((flags & IFF_UP) != 0) {
         iface->flags |= NI_FLAG_UP;
@@ -224,7 +265,7 @@ NIInterface *ni_get_interfaces(void) {
     NIInterface *head = NULL;
     int socket_fd;
 
-    if (getifaddrs(&list) != 0) {
+    if (ni_getifaddrs(&list) != 0) {
         return NULL;
     }
 
@@ -290,7 +331,7 @@ NIInterface *ni_get_interfaces(void) {
         }
 #endif
     }
-    freeifaddrs(list);
+    ni_freeifaddrs(list);
 
     /* MTU is not exposed by getifaddrs, so ask the kernel per interface. */
     socket_fd = socket(AF_INET, SOCK_DGRAM, 0);

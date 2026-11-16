@@ -76,4 +76,7 @@ jobs:
           compileKotlinAndroidNativeArm64
           compileKotlinAndroidNativeX86
           compileKotlinMingwX64
+          linkDebugTestAndroidNativeArm64
+          linkDebugTestAndroidNativeArm32
+          linkDebugTestAndroidNativeX86
           --stacktrace
