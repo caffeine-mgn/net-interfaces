@@ -36,6 +36,55 @@ version = providers.gradleProperty("version").orNull
     ?: System.getenv("GITHUB_REF_NAME")
     ?: "1.0.0-SNAPSHOT"
 
+// The signing plugin is applied explicitly: vanniktech's signAllPublications()
+// creates the sign*Publication tasks, but in this configuration it does not
+// trigger the project's `pluginManager.withPlugin("signing")` callback, so the
+// signatory used to stay unconfigured ("no configured signatory").
+apply(plugin = "signing")
+
+val useGpgSigning = providers.gradleProperty("signingUseGpg").orNull == "true"
+val inMemorySigningKey = providers.gradleProperty("signingInMemoryKey").orNull
+    ?: providers.gradleProperty("binom.gpg.private_key").orNull
+val inMemorySigningKeyId = providers.gradleProperty("signingInMemoryKeyId").orNull
+    ?: providers.gradleProperty("binom.gpg.key_id").orNull
+val inMemorySigningPassword = providers.gradleProperty("signingInMemoryKeyPassword").orNull
+    ?: providers.gradleProperty("binom.gpg.password").orNull
+val inMemorySigningBase64 =
+    providers.gradleProperty("signingInMemoryKeyIsBase64").orNull?.toBoolean() ?: false
+val signingConfigured =
+    useGpgSigning || (inMemorySigningKey != null &&
+        inMemorySigningKeyId != null &&
+        inMemorySigningPassword != null)
+
+extensions.configure<SigningExtension>("signing") {
+    when {
+        useGpgSigning -> {
+            useGpgCmd()
+            logger.lifecycle(
+                "[signing] Using system gpg via signing.gnupg.keyName=" +
+                    "${findProperty("signing.gnupg.keyName")}",
+            )
+        }
+
+        signingConfigured -> {
+            val decodedKey = if (inMemorySigningBase64) {
+                String(Base64.getDecoder().decode(inMemorySigningKey))
+            } else {
+                requireNotNull(inMemorySigningKey).replace("\\n", "\n")
+            }
+            logger.lifecycle(
+                "[signing] Using in-memory PGP key, length=${decodedKey.length}, " +
+                    "isBase64=$inMemorySigningBase64",
+            )
+            useInMemoryPgpKeys(decodedKey, inMemorySigningKeyId, inMemorySigningPassword)
+        }
+
+        else -> logger.lifecycle(
+            "[signing] No signing credentials configured; publications will not be signed.",
+        )
+    }
+}
+
 val nativeSources = file("src/nativeMain/c")
 
 val knClang = extensions.getByType(KnClangExtension::class.java)
@@ -332,10 +381,6 @@ mavenPublishing {
     // Signing is mandatory for Central but would break a plain local
     // `publishToMavenLocal` when no key is configured, so enable it only when
     // CI (or a developer) actually provides one.
-    val signingConfigured =
-        providers.gradleProperty("signingInMemoryKey").isPresent ||
-            providers.gradleProperty("binom.gpg.private_key").isPresent ||
-            providers.gradleProperty("signingUseGpg").orNull == "true"
     if (signingConfigured) {
         signAllPublications()
     }
@@ -369,45 +414,5 @@ mavenPublishing {
             developerConnection.set("scm:git:ssh://github.com/caffeine-mgn/net-interfaces.git")
             url.set("https://github.com/caffeine-mgn/net-interfaces")
         }
-    }
-}
-
-/*
- * GPG signing, mirroring the caffeine-mgn/* convention:
- *
- *   signingUseGpg=true — CI mode. The key is imported into the system keyring
- *   and Gradle delegates to the `gpg` binary (useGpgCmd()).
- *
- *   default — local development. An in-memory key is read from
- *   `signingInMemoryKey*` or `binom.gpg.*` Gradle properties.
- */
-pluginManager.withPlugin("signing") {
-    if (findProperty("signingUseGpg") == "true") {
-        extensions.configure<SigningExtension>("signing") {
-            useGpgCmd()
-        }
-        logger.lifecycle("[signing] Using system gpg via signing.gnupg.keyName=${findProperty("signing.gnupg.keyName")}")
-        return@withPlugin
-    }
-
-    val key = providers.gradleProperty("signingInMemoryKey").orNull
-        ?: providers.gradleProperty("binom.gpg.private_key").orNull
-    val keyId = providers.gradleProperty("signingInMemoryKeyId").orNull
-        ?: providers.gradleProperty("binom.gpg.key_id").orNull
-    val password = providers.gradleProperty("signingInMemoryKeyPassword").orNull
-        ?: providers.gradleProperty("binom.gpg.password").orNull
-    val isBase64 = providers.gradleProperty("signingInMemoryKeyIsBase64").orNull?.toBoolean() ?: false
-
-    if (key != null && keyId != null && password != null) {
-        val decodedKey = if (isBase64) {
-            String(Base64.getDecoder().decode(key))
-        } else {
-            key.replace("\\n", "\n")
-        }
-        logger.lifecycle("[signing] Using in-memory PGP key, length=${decodedKey.length}, isBase64=$isBase64")
-        extensions.getByType(SigningExtension::class.java)
-            .useInMemoryPgpKeys(decodedKey, keyId, password)
-    } else {
-        logger.lifecycle("[signing] No in-memory PGP key configured; publications will be signed by the publishing plugin only.")
     }
 }
